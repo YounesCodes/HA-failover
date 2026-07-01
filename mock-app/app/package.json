@@ -1,0 +1,15 @@
+{
+  "name": "ha-heartbeat-mock",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Minimal heartbeat app to exercise cross-region failover (RPO/RTO observable).",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^5.2.1",
+    "ioredis": "^5.11.1",
+    "pg": "^8.22.0"
+  }
+}

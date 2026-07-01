@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+set -euxo pipefail
+exec > /var/log/ha-bootstrap.log 2>&1   # bootstrap log for debugging
+
+hostnamectl set-hostname ${hostname}
+
+# ---- 2 GB swap: headroom for Postgres + Redis + etcd + app + Dokploy ----
+if [ ! -f /swapfile ]; then
+  fallocate -l 2G /swapfile || dd if=/dev/zero of=/swapfile bs=1M count=2048
+  chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile
+  grep -q '/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
+fi
+
+# ---- data volume: Postgres PGDATA + Redis persistence live on /data ----
+DATA_DEV=""
+for d in /dev/nvme1n1 /dev/xvdf /dev/sdf; do
+  if [ -b "$d" ]; then DATA_DEV="$d"; break; fi
+done
+if [ -n "$${DATA_DEV:-}" ]; then
+  blkid "$DATA_DEV" >/dev/null 2>&1 || mkfs.ext4 -L appdata "$DATA_DEV"
+  mkdir -p /data
+  grep -q '/data' /etc/fstab || echo 'LABEL=appdata /data ext4 defaults,nofail 0 2' >> /etc/fstab
+  mount -a
+fi
+
+# ---- Docker + git ----
+export DEBIAN_FRONTEND=noninteractive
+curl -fsSL https://get.docker.com | sh
+apt-get install -y git
+
+# ---- Tailscale mesh (nodes address each other by MagicDNS name) ----
+%{ if tailscale_auth_key != "" ~}
+curl -fsSL https://tailscale.com/install.sh | sh
+tailscale up --authkey='${tailscale_auth_key}' --hostname='${hostname}' --ssh --accept-dns=true
+%{ endif ~}
+
+# ---- Dokploy (local, per request; owns 80/443/3000 — the app uses 8080) ----
+%{ if install_dokploy ~}
+curl -sSL https://dokploy.com/install.sh | sh || true
+%{ endif ~}
+
+# ---- Deploy the mock to-do stack (only if a repo was provided) ----
+%{ if mock_app_repo != "" ~}
+git clone ${mock_app_repo} /opt/mock-src || (cd /opt/mock-src && git pull --ff-only || true)
+APPDIR=/opt/mock-src/${mock_app_subdir}
+cat > "$APPDIR/.env" <<'ENVEOF'
+REGION=${region}
+PATRONI_NAME=${hostname}
+ETCD_NAME=${hostname}
+NODE_MESH_IP=${hostname}
+PATRONI_SCOPE=${scope}
+ETCD3_HOSTS=127.0.0.1:2379
+ETCD_INITIAL_CLUSTER=${etcd_initial_cluster}
+ETCD_INITIAL_CLUSTER_STATE=new
+ETCD_TOKEN=${etcd_token}
+PG_SUPERUSER=postgres
+PG_SUPERUSER_PASSWORD=${pg_superuser_password}
+PG_REPL_USER=replicator
+PG_REPL_PASSWORD=${pg_repl_password}
+ENVEOF
+cd "$APPDIR"
+# Retry: peers/MagicDNS may not all be up yet on first boot; restart policies
+# + this loop let the etcd/Patroni cluster converge.
+( for i in 1 2 3 4 5; do docker compose --env-file .env up -d --build && break; sleep 20; done ) || true
+%{ endif ~}
+
+echo "ha-bootstrap complete"

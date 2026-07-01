@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+set -euxo pipefail
+exec > /var/log/ha-bootstrap.log 2>&1
+
+hostnamectl set-hostname ${hostname}
+
+export DEBIAN_FRONTEND=noninteractive
+curl -fsSL https://get.docker.com | sh
+apt-get install -y git
+
+%{ if tailscale_auth_key != "" ~}
+# ---- join the mesh so this node can serve as the etcd tie-breaker vote ----
+curl -fsSL https://tailscale.com/install.sh | sh
+tailscale up --authkey='${tailscale_auth_key}' --hostname='${hostname}' --ssh --accept-dns=true
+%{ endif ~}
+
+# ---- run the single etcd member (vote only — no app, no DB) ----
+%{ if mock_app_repo != "" ~}
+git clone ${mock_app_repo} /opt/mock-src || (cd /opt/mock-src && git pull --ff-only || true)
+APPDIR=/opt/mock-src/${mock_app_subdir}
+cat > "$APPDIR/.env" <<'ENVEOF'
+ETCD_NAME=witness
+NODE_MESH_IP=witness
+ETCD_INITIAL_CLUSTER=${etcd_initial_cluster}
+ETCD_INITIAL_CLUSTER_STATE=new
+ETCD_TOKEN=${etcd_token}
+ENVEOF
+cd "$APPDIR"
+( for i in 1 2 3 4 5; do docker compose -f docker-compose.witness.yml --env-file .env up -d && break; sleep 20; done ) || true
+%{ endif ~}
+
+echo "ha-bootstrap complete"
