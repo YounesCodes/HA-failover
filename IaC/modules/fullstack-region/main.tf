@@ -141,17 +141,20 @@ resource "aws_instance" "app" {
   }
 
   user_data = templatefile("${path.module}/templates/userdata.sh.tftpl", {
-    hostname              = "app-${var.region_label}${count.index + 1}"
-    region                = "region-${var.region_label}"
-    scope                 = "app${count.index + 1}"
-    tailscale_auth_key    = var.tailscale_auth_key
-    install_dokploy       = true
-    etcd_initial_cluster  = var.etcd_initial_cluster
-    etcd_token            = var.etcd_token
-    pg_superuser_password = var.pg_superuser_password
-    pg_repl_password      = var.pg_repl_password
-    mock_app_repo         = var.mock_app_repo
-    mock_app_subdir       = var.mock_app_subdir
+    hostname               = "app-${var.region_label}${count.index + 1}"
+    region                 = "region-${var.region_label}"
+    scope                  = "app${count.index + 1}"
+    tailscale_auth_key     = var.tailscale_auth_key
+    install_dokploy        = true
+    etcd_initial_cluster   = var.etcd_initial_cluster
+    etcd_token             = var.etcd_token
+    pg_superuser_password  = var.pg_superuser_password
+    pg_repl_password       = var.pg_repl_password
+    mock_app_repo          = var.mock_app_repo
+    mock_app_subdir        = var.mock_app_subdir
+    deploy_via_dokploy     = var.deploy_via_dokploy
+    dokploy_admin_email    = var.dokploy_admin_email
+    dokploy_admin_password = var.dokploy_admin_password
   })
 
   tags = {

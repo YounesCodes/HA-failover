@@ -23,10 +23,10 @@ if [ -n "$${DATA_DEV:-}" ]; then
   mount -a
 fi
 
-# ---- Docker + git ----
+# ---- Docker + git + jq ----
 export DEBIAN_FRONTEND=noninteractive
 curl -fsSL https://get.docker.com | sh
-apt-get install -y git
+apt-get install -y git jq
 
 # ---- Tailscale mesh (nodes address each other by MagicDNS name) ----
 %{ if tailscale_auth_key != "" ~}
@@ -39,7 +39,87 @@ tailscale up --authkey='${tailscale_auth_key}' --hostname='${hostname}' --ssh --
 curl -sSL https://dokploy.com/install.sh | sh || true
 %{ endif ~}
 
-# ---- Deploy the mock to-do stack (only if a repo was provided) ----
+%{ if deploy_via_dokploy ~}
+# ============================================================================
+# Deploy the stack AS A DOKPLOY COMPOSE APP (prod-faithful) via the API.
+# Flow verified against Dokploy v0.29.8 (better-auth): sign-up/email + sign-in
+# -> tRPC project.create (env id is in its response) -> compose.create ->
+# compose.update (git) -> compose.deploy. Idempotent (find-or-create). If a
+# future Dokploy version changes shapes, use dokploy-verify.sh / :3000/swagger,
+# or flip deploy_via_dokploy=false for raw compose. Log: this file + /tmp/dok-*.json.
+# ============================================================================
+cat > /opt/dokploy-deploy.sh <<'DEOF'
+#!/usr/bin/env bash
+set -uo pipefail
+API=http://127.0.0.1:3000/api
+CJ=/tmp/dok.cookies
+log(){ echo "[dokploy-deploy] $*"; }
+
+# 1) wait for Dokploy to answer
+for i in $(seq 1 60); do curl -fsS -o /dev/null http://127.0.0.1:3000 && break; sleep 5; done
+
+# 2) create the admin (better-auth; first boot) then sign in (always) -> cookie
+curl -s -X POST "$API/auth/sign-up/email" -H 'content-type: application/json' \
+  -d "$(jq -nc --arg e "$DOK_EMAIL" --arg p "$DOK_PASS" '{name:"Admin",email:$e,password:$p}')" \
+  > /tmp/dok-signup.json 2>&1 || true
+curl -s -c "$CJ" -X POST "$API/auth/sign-in/email" -H 'content-type: application/json' \
+  -d "$(jq -nc --arg e "$DOK_EMAIL" --arg p "$DOK_PASS" '{email:$e,password:$p}')" \
+  > /tmp/dok-signin.json 2>&1 || true
+
+tget(){ curl -s -b "$CJ" -G "$API/trpc/$1" --data-urlencode 'batch=1' --data-urlencode "input=$2"; }
+tpost(){ curl -s -b "$CJ" -X POST "$API/trpc/$1?batch=1" -H 'content-type: application/json' --data-raw "$2"; }
+
+# 3) find-or-create project 'ha-mock' -> production environmentId
+ENVID=$(tget project.all '{"0":{"json":null}}' | jq -r 'first(.[0].result.data.json[]? | select(.name=="ha-mock") | .environments[]? | select(.isDefault==true) | .environmentId) // empty')
+if [ -z "$ENVID" ]; then
+  ENVID=$(tpost project.create '{"0":{"json":{"name":"ha-mock","description":"HA failover mock"}}}' | jq -r '.[0].result.data.json.environment.environmentId // empty')
+fi
+log "environmentId=$ENVID"
+
+# 4) find-or-create compose named $PATRONI_NAME in that environment
+COMPID=$(tget project.all '{"0":{"json":null}}' | jq -r --arg n "$PATRONI_NAME" 'first(.[0].result.data.json[]? | select(.name=="ha-mock") | .environments[]? | .compose[]? | select(.name==$n) | .composeId) // empty')
+if [ -z "$COMPID" ]; then
+  COMPID=$(tpost compose.create "$(jq -nc --arg n "$PATRONI_NAME" --arg e "$ENVID" '{"0":{json:{name:$n,environmentId:$e,composeType:"docker-compose"}}}')" | jq -r '.[0].result.data.json.composeId // empty')
+fi
+log "composeId=$COMPID"
+
+# 5) per-node env passed to the compose (Dokploy writes it for compose interpolation)
+ENV_BLOB=$(cat <<EOF2
+REGION=$REGION
+PATRONI_NAME=$PATRONI_NAME
+ETCD_NAME=$PATRONI_NAME
+NODE_MESH_IP=$NODE_MESH_IP
+PATRONI_SCOPE=$PATRONI_SCOPE
+ETCD3_HOSTS=127.0.0.1:2379
+ETCD_INITIAL_CLUSTER=$ETCD_INITIAL_CLUSTER
+ETCD_INITIAL_CLUSTER_STATE=new
+ETCD_TOKEN=$ETCD_TOKEN
+PG_SUPERUSER=postgres
+PG_SUPERUSER_PASSWORD=$PG_SUPERUSER_PASSWORD
+PG_REPL_USER=replicator
+PG_REPL_PASSWORD=$PG_REPL_PASSWORD
+EOF2
+)
+
+# 6) point it at the git repo + compose path + env, then deploy
+BODY=$(jq -nc --arg id "$COMPID" --arg url "$DOK_REPO" --arg br "$DOK_BRANCH" \
+  --arg cp "$DOK_COMPOSE_PATH" --arg env "$ENV_BLOB" \
+  '{"0":{json:{composeId:$id,sourceType:"git",customGitUrl:$url,customGitBranch:$br,composePath:$cp,env:$env}}}')
+tpost compose.update "$BODY" > /tmp/dok-update.json
+tpost compose.deploy "$(jq -nc --arg id "$COMPID" '{"0":{json:{composeId:$id}}}')" > /tmp/dok-deploy.json
+log "done — see /tmp/dok-*.json"
+DEOF
+chmod +x /opt/dokploy-deploy.sh
+
+DOK_EMAIL='${dokploy_admin_email}' DOK_PASS='${dokploy_admin_password}' \
+DOK_REPO='${mock_app_repo}' DOK_BRANCH='main' DOK_COMPOSE_PATH='${mock_app_subdir}/docker-compose.yml' \
+REGION='${region}' PATRONI_NAME='${hostname}' NODE_MESH_IP='${hostname}' PATRONI_SCOPE='${scope}' \
+ETCD_INITIAL_CLUSTER='${etcd_initial_cluster}' ETCD_TOKEN='${etcd_token}' \
+PG_SUPERUSER_PASSWORD='${pg_superuser_password}' PG_REPL_PASSWORD='${pg_repl_password}' \
+/opt/dokploy-deploy.sh || true
+
+%{ else ~}
+# ---- Raw docker compose deploy (default; byte-identical to what Dokploy runs) ----
 %{ if mock_app_repo != "" ~}
 git clone ${mock_app_repo} /opt/mock-src || (cd /opt/mock-src && git pull --ff-only || true)
 APPDIR=/opt/mock-src/${mock_app_subdir}
@@ -59,9 +139,8 @@ PG_REPL_USER=replicator
 PG_REPL_PASSWORD=${pg_repl_password}
 ENVEOF
 cd "$APPDIR"
-# Retry: peers/MagicDNS may not all be up yet on first boot; restart policies
-# + this loop let the etcd/Patroni cluster converge.
 ( for i in 1 2 3 4 5; do docker compose --env-file .env up -d --build && break; sleep 20; done ) || true
+%{ endif ~}
 %{ endif ~}
 
 echo "ha-bootstrap complete"

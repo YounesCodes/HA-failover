@@ -28,13 +28,19 @@ and a key pair from your `public_key`. Postgres passwords are generated
 
 ### What user-data does on first boot
 mount `/data` → 2 GB swap → install **Docker** → join **Tailscale** (MagicDNS
-hostname) → install **Dokploy** → (if `mock_app_repo` set) clone it, write this
-node's `.env`, `docker compose up`. Nodes reach each other by MagicDNS name, so
-etcd/Patroni self-assemble. Trace: `/var/log/ha-bootstrap.log`.
+hostname) → install **Dokploy** → bring up the stack. Nodes reach each other by
+MagicDNS name, so etcd/Patroni self-assemble. Trace: `/var/log/ha-bootstrap.log`.
 
-### Toggle
+The bring-up depends on `deploy_via_dokploy`:
+- **`false`** (default): raw `docker compose up` of the repo (reliable).
+- **`true`**: deploys the stack as a **Dokploy Compose app** via Dokploy's
+  headless API (prod-faithful, managed in the UI). Rides version-sensitive
+  endpoints — see `NEXT_STEPS.md` §E. App stays on 8080 either way.
+
+### Toggles
 - `enable_witness = false` → **Option B** (streaming replication + scripted
   promotion, no auto quorum): drops the witness, leaving the 6 app servers.
+- `deploy_via_dokploy = true` → deploy through Dokploy instead of raw compose.
 
 ## Ports / security model
 

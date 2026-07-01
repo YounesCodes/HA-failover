@@ -122,6 +122,23 @@ variable "etcd_token" {
   default     = "ha-mock-etcd"
 }
 
+# ---------------------------------------------------------------------------
+# Deploy THROUGH Dokploy (prod-faithful) instead of raw docker compose.
+# Rides Dokploy's headless path (auth.createAdmin + tRPC) — see NEXT_STEPS
+# "Deploy via Dokploy". Default OFF so a Dokploy/API mismatch can't break apply.
+# ---------------------------------------------------------------------------
+variable "deploy_via_dokploy" {
+  description = "true = register + deploy the stack as a Dokploy Compose app at boot. false = raw `docker compose up` at boot."
+  type        = bool
+  default     = true
+}
+
+variable "dokploy_admin_email" {
+  description = "Email for the Dokploy admin created headlessly on first boot."
+  type        = string
+  default     = "admin@ha-mock.local"
+}
+
 # Non-overlapping VPC CIDRs (overlap is harmless today since regions connect
 # over the Tailscale overlay, not VPC peering — but distinct ranges keep the
 # door open to peering later).

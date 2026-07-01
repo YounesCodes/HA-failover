@@ -1,3 +1,12 @@
+output "dokploy_admin" {
+  description = "Dokploy admin login (each server's local Dokploy at http://<ip>:3000). Read with: terraform output -json dokploy_admin"
+  sensitive   = true
+  value = {
+    email    = var.dokploy_admin_email
+    password = random_password.dokploy_admin.result
+  }
+}
+
 output "region_a" {
   description = "Region A (primary) app servers."
   value = {

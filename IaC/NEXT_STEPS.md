@@ -2,10 +2,10 @@
 
 With `tailscale_auth_key` **and** `mock_app_repo` set, user-data does almost
 everything on first boot: mounts `/data`, adds swap, installs **Docker +
-Dokploy + Tailscale**, joins the mesh (MagicDNS), clones the repo, writes each
-node's `.env`, and `docker compose up`s the stack. Nodes address each other by
-MagicDNS name (`app-a1`, `app-b2`, `witness`), so the etcd + Patroni clusters
-self-assemble.
+Dokploy + Tailscale**, joins the mesh (MagicDNS), and brings up the stack. Nodes
+address each other by MagicDNS name (`app-a1`, `app-b2`, `witness`), so the etcd
++ Patroni clusters self-assemble. How the stack is brought up depends on
+`deploy_via_dokploy` (see §E).
 
 **So after apply the only required step is Route 53** (§A). Everything below §A
 is verification + optional.
@@ -61,21 +61,65 @@ Bring Region A back (it rejoins as standby via `reinit`/`pg_rewind`), then durin
 a window `patronictl switchover`; Route 53 sees A healthy again and serves PRIMARY.
 Manual, never automatic.
 
+## E. How the stack is brought up — `deploy_via_dokploy`
+
+**`false` (default, most reliable):** user-data clones the repo, writes each
+node's `.env`, and runs `docker compose up`. The containers are byte-identical to
+what Dokploy would run; the app just isn't shown in Dokploy's UI.
+
+**`true` (prod-faithful):** user-data installs Dokploy, then runs
+`/opt/dokploy-deploy.sh`, which drives Dokploy's **headless API** (verified on
+**v0.29.8 / better-auth**): `POST /api/auth/sign-up/email` + `sign-in/email`
+(session cookie) → `project.create` (environmentId comes back in its response) →
+`compose.create` → `compose.update` (git source = your repo, `composePath =
+testing/mock-app/docker-compose.yml`, per-node env) → `compose.deploy`. It's
+idempotent (find-or-create), so it's safe to re-run. The stack then appears as a
+**Dokploy Compose app** in the UI — exactly like prod. App still on **8080**.
+
+> **Repo prerequisite:** `mock_app_repo` must be a **public** git repo (Dokploy
+> clones it anonymously) that actually **contains `testing/mock-app/`** on the
+> `main` branch. An empty/private repo → `compose status = error`, nothing runs.
+
+Each server runs its **own local Dokploy**; the script runs on all six.
+
+Admin login (same on every server): `terraform output -json dokploy_admin`.
+Browse `http://<ip>:3000`.
+
+**Before trusting it (recommended), confirm the two response shapes** with the
+helper — it dumps the OpenAPI field names + a live `project.all`, read-only:
+```bash
+# on an app server, or remotely with a token
+DOK_EMAIL=<your-admin-email> DOK_PASS=$(terraform output -raw ... ) \
+  ../mock-app/dokploy-verify.sh
+# (remote: DOK_TOKEN=xxx ../mock-app/dokploy-verify.sh http://<ip>:3000)
+```
+It prints exactly where `environmentId` / `composeId` live and which two lines
+to patch if they differ.
+
+**If it doesn't converge** (Dokploy's headless path is version-sensitive):
+- Logs: `/var/log/ha-bootstrap.log` and `/tmp/dok-*.json` on the server.
+- Patch the two `(VERIFY)` jq paths in `/opt/dokploy-deploy.sh` per
+  `dokploy-verify.sh` / `http://<ip>:3000/swagger`, then re-run
+  `/opt/dokploy-deploy.sh`.
+- Or set `deploy_via_dokploy = false` and re-apply for the raw-compose path.
+
 ---
 
 ## Things that are NOT IaC (do them yourself)
 
 1. **Route 53 failover** — §A above (your zone/domain).
 2. **Cluster convergence** — on first boot, if a node came up before its peers'
-   MagicDNS was ready, the compose retry loop usually still converges. If a box
-   isn't healthy after ~5 min: `ssh` in, `cd /opt/mock-src/testing/mock-app &&
-   docker compose --env-file .env up -d`. (Check `/var/log/ha-bootstrap.log`.)
+   MagicDNS was ready, the retry loop usually still converges. If a box isn't
+   healthy after ~5 min, re-run the deploy: raw path → `cd
+   /opt/mock-src/testing/mock-app && docker compose --env-file .env up -d`;
+   Dokploy path → `/opt/dokploy-deploy.sh`. (Check `/var/log/ha-bootstrap.log`.)
 3. **`ETCD_INITIAL_CLUSTER_STATE`** — user-data writes `new` for the initial
-   bring-up. After the cluster is formed, edit each `.env` to `existing` so a
-   later reboot rejoins instead of trying to re-bootstrap.
-4. **Dokploy first-run** — browse `http://<ip>:3000` to set the admin user. Not
-   needed for the failover test (the app runs via compose on 8080, independent of
-   Dokploy); it's installed for parity only.
+   bring-up. After the cluster is formed, flip it to `existing` (in each `.env`,
+   or the Dokploy compose env) so a later reboot rejoins instead of re-bootstrapping.
+4. **Dokploy admin** — auto-created when `deploy_via_dokploy = true` (creds via
+   `terraform output -json dokploy_admin`). With the default (`false`), set the
+   admin yourself at `http://<ip>:3000` if you want to use the UI — not needed
+   for the failover test.
 5. **TLS** (optional for a test) — the app is HTTP on 8080. For HTTPS, terminate
    in-region at Traefik with the **DNS-01 (Route 53) ACME** challenge so the warm
    standby renews without traffic (see Architecture Report §4.7).

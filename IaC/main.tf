@@ -25,6 +25,10 @@ resource "random_password" "pg_repl" {
   length  = 20
   special = false
 }
+resource "random_password" "dokploy_admin" {
+  length  = 20
+  special = false
+}
 
 # ----- Region A: primary, 3 self-contained app servers ---------------------
 module "region_a" {
@@ -33,25 +37,28 @@ module "region_a" {
     aws = aws.region_a
   }
 
-  project               = var.project
-  region                = var.region_a
-  region_label          = "a"
-  role                  = "primary"
-  app_count             = var.app_count
-  instance_type         = var.app_instance_type
-  vpc_cidr              = var.vpc_cidr_a
-  root_volume_gb        = var.root_volume_gb
-  data_volume_gb        = var.data_volume_gb
-  public_key            = var.public_key
-  allowed_ssh_cidr      = var.allowed_ssh_cidr
-  allowed_http_cidrs    = var.allowed_http_cidrs
-  tailscale_auth_key    = var.tailscale_auth_key
-  etcd_initial_cluster  = local.etcd_initial_cluster
-  etcd_token            = var.etcd_token
-  pg_superuser_password = random_password.pg_super.result
-  pg_repl_password      = random_password.pg_repl.result
-  mock_app_repo         = var.mock_app_repo
-  mock_app_subdir       = var.mock_app_subdir
+  project                = var.project
+  region                 = var.region_a
+  region_label           = "a"
+  role                   = "primary"
+  app_count              = var.app_count
+  instance_type          = var.app_instance_type
+  vpc_cidr               = var.vpc_cidr_a
+  root_volume_gb         = var.root_volume_gb
+  data_volume_gb         = var.data_volume_gb
+  public_key             = var.public_key
+  allowed_ssh_cidr       = var.allowed_ssh_cidr
+  allowed_http_cidrs     = var.allowed_http_cidrs
+  tailscale_auth_key     = var.tailscale_auth_key
+  etcd_initial_cluster   = local.etcd_initial_cluster
+  etcd_token             = var.etcd_token
+  pg_superuser_password  = random_password.pg_super.result
+  pg_repl_password       = random_password.pg_repl.result
+  mock_app_repo          = var.mock_app_repo
+  mock_app_subdir        = var.mock_app_subdir
+  deploy_via_dokploy     = var.deploy_via_dokploy
+  dokploy_admin_email    = var.dokploy_admin_email
+  dokploy_admin_password = random_password.dokploy_admin.result
 }
 
 # ----- Region B: warm standby, 3 self-contained app servers ----------------
@@ -61,25 +68,28 @@ module "region_b" {
     aws = aws.region_b
   }
 
-  project               = var.project
-  region                = var.region_b
-  region_label          = "b"
-  role                  = "standby"
-  app_count             = var.app_count
-  instance_type         = var.app_instance_type
-  vpc_cidr              = var.vpc_cidr_b
-  root_volume_gb        = var.root_volume_gb
-  data_volume_gb        = var.data_volume_gb
-  public_key            = var.public_key
-  allowed_ssh_cidr      = var.allowed_ssh_cidr
-  allowed_http_cidrs    = var.allowed_http_cidrs
-  tailscale_auth_key    = var.tailscale_auth_key
-  etcd_initial_cluster  = local.etcd_initial_cluster
-  etcd_token            = var.etcd_token
-  pg_superuser_password = random_password.pg_super.result
-  pg_repl_password      = random_password.pg_repl.result
-  mock_app_repo         = var.mock_app_repo
-  mock_app_subdir       = var.mock_app_subdir
+  project                = var.project
+  region                 = var.region_b
+  region_label           = "b"
+  role                   = "standby"
+  app_count              = var.app_count
+  instance_type          = var.app_instance_type
+  vpc_cidr               = var.vpc_cidr_b
+  root_volume_gb         = var.root_volume_gb
+  data_volume_gb         = var.data_volume_gb
+  public_key             = var.public_key
+  allowed_ssh_cidr       = var.allowed_ssh_cidr
+  allowed_http_cidrs     = var.allowed_http_cidrs
+  tailscale_auth_key     = var.tailscale_auth_key
+  etcd_initial_cluster   = local.etcd_initial_cluster
+  etcd_token             = var.etcd_token
+  pg_superuser_password  = random_password.pg_super.result
+  pg_repl_password       = random_password.pg_repl.result
+  mock_app_repo          = var.mock_app_repo
+  mock_app_subdir        = var.mock_app_subdir
+  deploy_via_dokploy     = var.deploy_via_dokploy
+  dokploy_admin_email    = var.dokploy_admin_email
+  dokploy_admin_password = random_password.dokploy_admin.result
 }
 
 # ----- Witness: single etcd vote in a third region (Option A) --------------

@@ -32,3 +32,9 @@ variable "pg_repl_password" {
 }
 variable "mock_app_repo" { type = string }
 variable "mock_app_subdir" { type = string }
+variable "deploy_via_dokploy" { type = bool }
+variable "dokploy_admin_email" { type = string }
+variable "dokploy_admin_password" {
+  type      = string
+  sensitive = true
+}

@@ -33,6 +33,13 @@ region_witness = "eu-west-1"    # quorum witness
 # promotion, no automatic quorum) — drops the witness.
 enable_witness = true
 
+# --- Deploy through Dokploy (prod-faithful) instead of raw docker compose ---
+# true  = register + deploy the stack as a Dokploy Compose app at boot (rides
+#         Dokploy's headless API; may need a /swagger tweak — see NEXT_STEPS).
+# false = plain `docker compose up` at boot (reliable; identical containers).
+deploy_via_dokploy  = false
+dokploy_admin_email = "admin@ha-mock.local"
+
 # --- Sizing (mock app + local Dokploy co-resident -> needs ~4 GB) ---
 app_count             = 3
 app_instance_type     = "t3.medium" # 2 vCPU / 4 GB + 2 GB swap

@@ -44,8 +44,10 @@ DB pairs share a Patroni scope: `app-a1+app-b1 = app1`, `a2+b2 = app2`, `a3+b3 =
 ## Deploy
 
 **Automatic (default):** if you set `mock_app_repo` + `tailscale_auth_key` in the
-IaC, every server clones this repo, writes its own `.env`, and `docker compose up`s
-on first boot — nothing to do here. See `../IaC/NEXT_STEPS.md`.
+IaC, every server brings the stack up on first boot — nothing to do here. See
+`../IaC/NEXT_STEPS.md`. With `deploy_via_dokploy = true` it's deployed as a
+**Dokploy Compose app** (prod-faithful); run **`dokploy-verify.sh`** first to
+confirm the API response shapes for your Dokploy version (NEXT_STEPS §E).
 
 **By hand (per server):**
 ```bash
