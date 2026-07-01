@@ -29,6 +29,13 @@ bootstrap:
   initdb:
     - encoding: UTF8
     - data-checksums
+  # Applied at initdb. Allow the standby (replicator) + apps to connect over the
+  # mesh. DB ports aren't publicly exposed (not in the SG), so 0.0.0.0/0 here
+  # just means "any mesh peer".
+  pg_hba:
+    - local all all trust
+    - host replication ${PG_REPL_USER} 0.0.0.0/0 md5
+    - host all all 0.0.0.0/0 md5
 
 postgresql:
   listen: 0.0.0.0:5432
@@ -42,6 +49,12 @@ postgresql:
     replication:
       username: ${PG_REPL_USER}
       password: ${PG_REPL_PASSWORD}
+  # Runtime pg_hba (reapplied on reload) — same rules as bootstrap so a standby
+  # rebuilt via pg_basebackup keeps accepting replication.
+  pg_hba:
+    - local all all trust
+    - host replication ${PG_REPL_USER} 0.0.0.0/0 md5
+    - host all all 0.0.0.0/0 md5
   parameters:
     unix_socket_directories: /var/run/postgresql
 

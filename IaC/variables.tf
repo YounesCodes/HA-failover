@@ -95,7 +95,7 @@ variable "allowed_http_cidrs" {
 }
 
 variable "tailscale_auth_key" {
-  description = "Tailscale auth key for the mesh. REQUIRED for the automatic app deploy: nodes address each other by Tailscale MagicDNS name, so etcd/Patroni self-assemble at boot. Use an ephemeral, pre-approved, tagged key. Stored in user-data."
+  description = "Tailscale auth key for the mesh. MUST be EPHEMERAL (+ reusable, pre-approved, tagged) — nodes address each other by MagicDNS name, and a non-ephemeral key leaves dead devices holding those names after destroy, so re-applies collide (app-a1-1, ...) and MagicDNS breaks. Ephemeral devices auto-remove when offline. Stored in user-data."
   type        = string
   default     = ""
   sensitive   = true

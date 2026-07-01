@@ -1,0 +1,47 @@
+# DB service (deploy as its OWN Dokploy Compose service, e.g. named "db").
+# etcd member + Patroni-managed Postgres for this node. Host-networked so it
+# binds the Tailscale interface (cross-region replication) and the host's
+# 5432/2379/2380, which the "app" service reaches via host-gateway.
+#
+# This is "Postgres as a Dokploy service" done the HA way — Patroni owns
+# Postgres, so it replicates + auto-fails-over (the built-in Dokploy Postgres
+# resource can't). See README "Patroni vs the built-in Postgres service".
+
+name: ha-db
+
+services:
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.31
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      ETCD_NAME: ${ETCD_NAME}
+      ETCD_DATA_DIR: /etcd-data
+      ETCD_INITIAL_ADVERTISE_PEER_URLS: http://${NODE_MESH_IP}:2380
+      ETCD_LISTEN_PEER_URLS: http://0.0.0.0:2380
+      ETCD_ADVERTISE_CLIENT_URLS: http://${NODE_MESH_IP}:2379
+      ETCD_LISTEN_CLIENT_URLS: http://0.0.0.0:2379
+      ETCD_INITIAL_CLUSTER: ${ETCD_INITIAL_CLUSTER}
+      ETCD_INITIAL_CLUSTER_STATE: ${ETCD_INITIAL_CLUSTER_STATE}
+      ETCD_INITIAL_CLUSTER_TOKEN: ${ETCD_TOKEN}
+    volumes:
+      - /data/etcd:/etcd-data
+
+  postgres:
+    build: ./patroni
+    network_mode: host
+    restart: unless-stopped
+    depends_on:
+      - etcd
+    environment:
+      PATRONI_SCOPE: ${PATRONI_SCOPE}
+      PATRONI_NAME: ${PATRONI_NAME}
+      NODE_MESH_IP: ${NODE_MESH_IP}
+      ETCD3_HOSTS: ${ETCD3_HOSTS}
+      PATRONI_POSTGRESQL_DATA_DIR: /data/pgdata
+      PG_SUPERUSER: ${PG_SUPERUSER}
+      PG_SUPERUSER_PASSWORD: ${PG_SUPERUSER_PASSWORD}
+      PG_REPL_USER: ${PG_REPL_USER}
+      PG_REPL_PASSWORD: ${PG_REPL_PASSWORD}
+    volumes:
+      - /data:/data

@@ -31,7 +31,10 @@ apt-get install -y git jq
 # ---- Tailscale mesh (nodes address each other by MagicDNS name) ----
 %{ if tailscale_auth_key != "" ~}
 curl -fsSL https://tailscale.com/install.sh | sh
-tailscale up --authkey='${tailscale_auth_key}' --hostname='${hostname}' --ssh --accept-dns=true
+# --reset avoids inheriting stale state. NOTE: the auth key MUST be EPHEMERAL,
+# else destroyed nodes keep their tailnet name and re-applies get app-a1-1 etc.,
+# breaking MagicDNS (see NEXT_STEPS "stale Tailscale devices").
+tailscale up --authkey='${tailscale_auth_key}' --hostname='${hostname}' --ssh --accept-dns=true --reset
 %{ endif ~}
 
 # ---- Dokploy (local, per request; owns 80/443/3000 — the app uses 8080) ----
@@ -76,15 +79,20 @@ if [ -z "$ENVID" ]; then
 fi
 log "environmentId=$ENVID"
 
-# 4) find-or-create compose named $PATRONI_NAME in that environment
-COMPID=$(tget project.all '{"0":{"json":null}}' | jq -r --arg n "$PATRONI_NAME" 'first(.[0].result.data.json[]? | select(.name=="ha-mock") | .environments[]? | .compose[]? | select(.name==$n) | .composeId) // empty')
-if [ -z "$COMPID" ]; then
-  COMPID=$(tpost compose.create "$(jq -nc --arg n "$PATRONI_NAME" --arg e "$ENVID" '{"0":{json:{name:$n,environmentId:$e,composeType:"docker-compose"}}}')" | jq -r '.[0].result.data.json.composeId // empty')
-fi
-log "composeId=$COMPID"
+# find-or-create a compose SERVICE, wire it to git, deploy.  $1=name $2=path $3=env
+deploy_svc(){
+  local nm="$1" cpath="$2" env="$3" cid
+  cid=$(tget project.all '{"0":{"json":null}}' | jq -r --arg n "$nm" 'first(.[0].result.data.json[]?|select(.name=="ha-mock")|.environments[]?|.compose[]?|select(.name==$n)|.composeId)//empty')
+  if [ -z "$cid" ]; then
+    cid=$(tpost compose.create "$(jq -nc --arg n "$nm" --arg e "$ENVID" '{"0":{json:{name:$n,environmentId:$e,composeType:"docker-compose"}}}')" | jq -r '.[0].result.data.json.composeId // empty')
+  fi
+  log "$nm composeId=$cid"
+  tpost compose.update "$(jq -nc --arg id "$cid" --arg url "$DOK_REPO" --arg br "$DOK_BRANCH" --arg cp "$cpath" --arg env "$env" '{"0":{json:{composeId:$id,sourceType:"git",customGitUrl:$url,customGitBranch:$br,composePath:$cp,env:$env}}}')" > /tmp/dok-update-$nm.json
+  tpost compose.deploy "$(jq -nc --arg id "$cid" '{"0":{json:{composeId:$id}}}')" > /tmp/dok-deploy-$nm.json
+}
 
-# 5) per-node env passed to the compose (Dokploy writes it for compose interpolation)
-ENV_BLOB=$(cat <<EOF2
+# per-service env (Dokploy writes it for compose interpolation)
+DB_ENV=$(cat <<EOF2
 REGION=$REGION
 PATRONI_NAME=$PATRONI_NAME
 ETCD_NAME=$PATRONI_NAME
@@ -100,26 +108,31 @@ PG_REPL_USER=replicator
 PG_REPL_PASSWORD=$PG_REPL_PASSWORD
 EOF2
 )
+APP_ENV=$(cat <<EOF2
+REGION=$REGION
+PATRONI_NAME=$PATRONI_NAME
+PG_SUPERUSER=postgres
+PG_SUPERUSER_PASSWORD=$PG_SUPERUSER_PASSWORD
+EOF2
+)
 
-# 6) point it at the git repo + compose path + env, then deploy
-BODY=$(jq -nc --arg id "$COMPID" --arg url "$DOK_REPO" --arg br "$DOK_BRANCH" \
-  --arg cp "$DOK_COMPOSE_PATH" --arg env "$ENV_BLOB" \
-  '{"0":{json:{composeId:$id,sourceType:"git",customGitUrl:$url,customGitBranch:$br,composePath:$cp,env:$env}}}')
-tpost compose.update "$BODY" > /tmp/dok-update.json
-tpost compose.deploy "$(jq -nc --arg id "$COMPID" '{"0":{json:{composeId:$id}}}')" > /tmp/dok-deploy.json
+# three separate Dokploy services (redis first, then db, then app)
+deploy_svc redis "$DOK_SUBDIR/docker-compose.redis.yml" ""
+deploy_svc db    "$DOK_SUBDIR/docker-compose.db.yml"    "$DB_ENV"
+deploy_svc app   "$DOK_SUBDIR/docker-compose.app.yml"   "$APP_ENV"
 log "done — see /tmp/dok-*.json"
 DEOF
 chmod +x /opt/dokploy-deploy.sh
 
 DOK_EMAIL='${dokploy_admin_email}' DOK_PASS='${dokploy_admin_password}' \
-DOK_REPO='${mock_app_repo}' DOK_BRANCH='main' DOK_COMPOSE_PATH='${mock_app_subdir}/docker-compose.yml' \
+DOK_REPO='${mock_app_repo}' DOK_BRANCH='main' DOK_SUBDIR='${mock_app_subdir}' \
 REGION='${region}' PATRONI_NAME='${hostname}' NODE_MESH_IP='${hostname}' PATRONI_SCOPE='${scope}' \
 ETCD_INITIAL_CLUSTER='${etcd_initial_cluster}' ETCD_TOKEN='${etcd_token}' \
 PG_SUPERUSER_PASSWORD='${pg_superuser_password}' PG_REPL_PASSWORD='${pg_repl_password}' \
 /opt/dokploy-deploy.sh || true
 
 %{ else ~}
-# ---- Raw docker compose deploy (default; byte-identical to what Dokploy runs) ----
+# ---- Raw docker compose deploy (default): the same 3 services as the Dokploy path ----
 %{ if mock_app_repo != "" ~}
 git clone ${mock_app_repo} /opt/mock-src || (cd /opt/mock-src && git pull --ff-only || true)
 APPDIR=/opt/mock-src/${mock_app_subdir}
@@ -139,7 +152,11 @@ PG_REPL_USER=replicator
 PG_REPL_PASSWORD=${pg_repl_password}
 ENVEOF
 cd "$APPDIR"
-( for i in 1 2 3 4 5; do docker compose --env-file .env up -d --build && break; sleep 20; done ) || true
+( for i in 1 2 3 4 5; do \
+    docker compose -f docker-compose.redis.yml --env-file .env up -d && \
+    docker compose -f docker-compose.db.yml    --env-file .env up -d --build && \
+    docker compose -f docker-compose.app.yml   --env-file .env up -d --build && break; \
+    sleep 20; done ) || true
 %{ endif ~}
 %{ endif ~}
 

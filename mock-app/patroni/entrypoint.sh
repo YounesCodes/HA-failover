@@ -3,8 +3,12 @@ set -euo pipefail
 
 : "${PATRONI_POSTGRESQL_DATA_DIR:=/data/pgdata}"
 
-# Own only our own PGDATA subdir (etcd/redis use sibling dirs under /data).
+# The EBS mount is root-owned. Patroni runs as `postgres` and must be able to
+# CREATE and RENAME its data dir (e.g. -> pgdata.failed on a failed bootstrap),
+# which needs write on the PARENT dir too — so chown the parent, not just PGDATA.
+PARENT=$(dirname "$PATRONI_POSTGRESQL_DATA_DIR")
 mkdir -p "$PATRONI_POSTGRESQL_DATA_DIR"
+chown postgres:postgres "$PARENT"
 chown -R postgres:postgres "$PATRONI_POSTGRESQL_DATA_DIR"
 chmod 700 "$PATRONI_POSTGRESQL_DATA_DIR"
 

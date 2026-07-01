@@ -123,8 +123,16 @@ to patch if they differ.
 5. **TLS** (optional for a test) — the app is HTTP on 8080. For HTTPS, terminate
    in-region at Traefik with the **DNS-01 (Route 53) ACME** challenge so the warm
    standby renews without traffic (see Architecture Report §4.7).
-6. **Tailscale key** — must be an ephemeral, pre-approved, tagged key with
-   MagicDNS enabled on the tailnet, or the auto-deploy can't self-assemble.
+6. **Tailscale key — MUST be EPHEMERAL** (+ reusable, pre-approved, tagged,
+   MagicDNS on). Nodes address each other by MagicDNS name (`app-a1`, `witness`).
+   A **non-ephemeral** key leaves the destroyed instances' devices in the tailnet
+   holding those names, so the next apply's nodes become `app-a1-1`, … and
+   MagicDNS resolves to **dead** nodes → etcd can't form quorum → Postgres never
+   starts. Ephemeral devices auto-remove when offline, avoiding this. **Between
+   applies with a non-ephemeral key, delete the old ha-failover devices in the
+   Tailscale admin console first.** To recover a live fleet that already collided:
+   delete the offline devices, then on each node
+   `sudo tailscale set --hostname=<clean-name>` and restart its etcd container.
 
 ---
 

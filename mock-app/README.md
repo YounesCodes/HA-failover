@@ -3,17 +3,40 @@
 A small **to-do list** app used to make cross-region **replication and failover
 visible**. Deploy the same bundle to every app server; the witness runs etcd alone.
 
-Per app server (`app-a1..3`, `app-b1..3`):
+Each app server runs **three separate Dokploy services** (like prod's app / db /
+redis cards), each its own compose file:
 
-| Service | What | Port / network |
-|---------|------|----------------|
-| `app` | Node CRUD API + live HTML UI | **8080** (bridge → host) |
-| `postgres` | Postgres managed by **Patroni** (one member of its pair's cluster) | host (mesh) |
-| `etcd` | one etcd quorum member | host (mesh) |
-| `redis` | local Redis | bridge |
+| Dokploy service | compose file | What | Network |
+|---|---|---|---|
+| `redis` | `docker-compose.redis.yml` | Redis (cache) | host (`:6379`) |
+| `db` | `docker-compose.db.yml` | **etcd + Patroni-managed Postgres** (HA) | host (mesh, `:5432`) |
+| `app` | `docker-compose.app.yml` | Node CRUD API + live HTML UI | `:8080`; reaches db/redis via host-gateway |
 
-> Ports: **Dokploy** owns 80/443 (Traefik) + 3000 (UI); the mock app runs on
-> **8080** so they don't clash. Browser + Route 53 health check target `:8080`.
+> Ports: **Dokploy** owns 80/443 (Traefik) + 3000 (UI); the app runs on **8080**
+> so they don't clash. Browser + Route 53 health check target `:8080`.
+> The witness runs `docker-compose.witness.yml` (etcd only).
+
+### Patroni vs the built-in Dokploy Postgres resource
+The `db` service is a **Compose service running Patroni** — *not* Dokploy's
+built-in Postgres resource. They're mutually exclusive: Patroni must own the
+Postgres process/data/config to elect a leader, promote, and fence, whereas the
+built-in resource is a standalone `postgres` container Dokploy controls (no
+replication/failover). So the only way to have a **Dokploy-managed, HA** Postgres
+is this Compose service. Redis has no such constraint — a `redis` Compose service
+(here) or Dokploy's built-in Redis resource both work; if you want the built-in
+resource's backup/metrics UI, create it and point the app's `REDIS_URL` at it.
+
+### Migrating an existing built-in Postgres → this Patroni service (prod)
+1. Stand up the Patroni `db` Compose service **alongside** the current built-in
+   Postgres (different port), as an empty new cluster.
+2. Load your data: `pg_dump` the built-in DB → `pg_restore`/`psql` into the
+   Patroni leader (or, for near-zero downtime, add the Patroni primary as a
+   logical-replication subscriber to the built-in DB and let it catch up).
+3. Cut over in a short window: stop writes, confirm the Patroni leader is
+   caught up, repoint the app's DB host/port at the Patroni service, resume.
+4. Retire the built-in Postgres resource once verified.
+The app change is only the connection host/port — the schema and data are
+identical, so it's a data-move + repoint, not a rewrite.
 
 ## How it shows replication working
 
