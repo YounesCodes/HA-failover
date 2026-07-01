@@ -95,6 +95,7 @@ deploy_svc(){
 DB_ENV=$(cat <<EOF2
 REGION=$REGION
 PATRONI_NAME=$PATRONI_NAME
+PRIMARY_PEER=$PRIMARY_PEER
 ETCD_NAME=$PATRONI_NAME
 NODE_MESH_IP=$NODE_MESH_IP
 PATRONI_SCOPE=$PATRONI_SCOPE
@@ -126,7 +127,7 @@ chmod +x /opt/dokploy-deploy.sh
 
 DOK_EMAIL='${dokploy_admin_email}' DOK_PASS='${dokploy_admin_password}' \
 DOK_REPO='${mock_app_repo}' DOK_BRANCH='main' DOK_SUBDIR='${mock_app_subdir}' \
-REGION='${region}' PATRONI_NAME='${hostname}' NODE_MESH_IP='${hostname}' PATRONI_SCOPE='${scope}' \
+REGION='${region}' PATRONI_NAME='${hostname}' PRIMARY_PEER='${primary_peer}' NODE_MESH_IP='${hostname}' PATRONI_SCOPE='${scope}' \
 ETCD_INITIAL_CLUSTER='${etcd_initial_cluster}' ETCD_TOKEN='${etcd_token}' \
 PG_SUPERUSER_PASSWORD='${pg_superuser_password}' PG_REPL_PASSWORD='${pg_repl_password}' \
 /opt/dokploy-deploy.sh || true
@@ -139,6 +140,7 @@ APPDIR=/opt/mock-src/${mock_app_subdir}
 cat > "$APPDIR/.env" <<'ENVEOF'
 REGION=${region}
 PATRONI_NAME=${hostname}
+PRIMARY_PEER=${primary_peer}
 ETCD_NAME=${hostname}
 NODE_MESH_IP=${hostname}
 PATRONI_SCOPE=${scope}

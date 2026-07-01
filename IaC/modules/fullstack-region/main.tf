@@ -144,6 +144,8 @@ resource "aws_instance" "app" {
     hostname               = "app-${var.region_label}${count.index + 1}"
     region                 = "region-${var.region_label}"
     scope                  = "app${count.index + 1}"
+    # Region A is the designated primary: every scope's primary peer is app-aN.
+    primary_peer           = "app-a${count.index + 1}"
     tailscale_auth_key     = var.tailscale_auth_key
     install_dokploy        = true
     etcd_initial_cluster   = var.etcd_initial_cluster

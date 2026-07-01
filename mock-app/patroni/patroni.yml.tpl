@@ -59,6 +59,9 @@ postgresql:
     unix_socket_directories: /var/run/postgresql
 
 tags:
+  # Region A is primary by default: A nodes render 100, B nodes render 1.
+  # Higher wins a leader election among equals; it never demotes a live leader.
+  failover_priority: ${PATRONI_FAILOVER_PRIORITY}
   nofailover: false
   noloadbalance: false
   clonefrom: false
