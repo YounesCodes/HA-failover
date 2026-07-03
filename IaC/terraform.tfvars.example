@@ -41,7 +41,8 @@ deploy_via_dokploy  = false
 dokploy_admin_email = "admin@ha-mock.local"
 
 # --- Sizing (mock app + local Dokploy co-resident -> needs ~4 GB) ---
-app_count             = 3
+# 1 = single-app topology: 1 app in Region A + 1 in Region B + witness = 3 instances.
+app_count             = 1
 app_instance_type     = "t3.medium" # 2 vCPU / 4 GB + 2 GB swap
 witness_instance_type = "t3.micro"
 data_volume_gb        = 10

@@ -1,4 +1,4 @@
-# Witness node: a single etcd member (vote only — no app, no Postgres, no Redis).
+# Witness node: a single etcd member (vote only — no app, no Postgres).
 # Run with:  docker compose -f docker-compose.witness.yml --env-file .env up -d
 
 name: ha-mock-witness

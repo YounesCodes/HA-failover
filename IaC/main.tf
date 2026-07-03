@@ -30,7 +30,7 @@ resource "random_password" "dokploy_admin" {
   special = false
 }
 
-# ----- Region A: primary, 3 self-contained app servers ---------------------
+# ----- Region A: primary, one self-contained app server (app_count) ---------
 module "region_a" {
   source = "./modules/fullstack-region"
   providers = {
@@ -61,7 +61,7 @@ module "region_a" {
   dokploy_admin_password = random_password.dokploy_admin.result
 }
 
-# ----- Region B: warm standby, 3 self-contained app servers ----------------
+# ----- Region B: warm standby, one self-contained app server (app_count) ----
 module "region_b" {
   source = "./modules/fullstack-region"
   providers = {

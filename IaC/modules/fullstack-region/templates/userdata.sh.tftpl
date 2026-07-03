@@ -4,14 +4,14 @@ exec > /var/log/ha-bootstrap.log 2>&1   # bootstrap log for debugging
 
 hostnamectl set-hostname ${hostname}
 
-# ---- 2 GB swap: headroom for Postgres + Redis + etcd + app + Dokploy ----
+# ---- 2 GB swap: headroom for Postgres + etcd + app + Dokploy ----
 if [ ! -f /swapfile ]; then
   fallocate -l 2G /swapfile || dd if=/dev/zero of=/swapfile bs=1M count=2048
   chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile
   grep -q '/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
 fi
 
-# ---- data volume: Postgres PGDATA + Redis persistence live on /data ----
+# ---- data volume: Postgres PGDATA lives on /data ----
 DATA_DEV=""
 for d in /dev/nvme1n1 /dev/xvdf /dev/sdf; do
   if [ -b "$d" ]; then DATA_DEV="$d"; break; fi
@@ -117,8 +117,7 @@ PG_SUPERUSER_PASSWORD=$PG_SUPERUSER_PASSWORD
 EOF2
 )
 
-# three separate Dokploy services (redis first, then db, then app)
-deploy_svc redis "$DOK_SUBDIR/docker-compose.redis.yml" ""
+# two separate Dokploy services (db first, then app)
 deploy_svc db    "$DOK_SUBDIR/docker-compose.db.yml"    "$DB_ENV"
 deploy_svc app   "$DOK_SUBDIR/docker-compose.app.yml"   "$APP_ENV"
 log "done — see /tmp/dok-*.json"
@@ -133,7 +132,7 @@ PG_SUPERUSER_PASSWORD='${pg_superuser_password}' PG_REPL_PASSWORD='${pg_repl_pas
 /opt/dokploy-deploy.sh || true
 
 %{ else ~}
-# ---- Raw docker compose deploy (default): the same 3 services as the Dokploy path ----
+# ---- Raw docker compose deploy (default): the same 2 services as the Dokploy path ----
 %{ if mock_app_repo != "" ~}
 git clone ${mock_app_repo} /opt/mock-src || (cd /opt/mock-src && git pull --ff-only || true)
 APPDIR=/opt/mock-src/${mock_app_subdir}
@@ -155,7 +154,6 @@ PG_REPL_PASSWORD=${pg_repl_password}
 ENVEOF
 cd "$APPDIR"
 ( for i in 1 2 3 4 5; do \
-    docker compose -f docker-compose.redis.yml --env-file .env up -d && \
     docker compose -f docker-compose.db.yml    --env-file .env up -d --build && \
     docker compose -f docker-compose.app.yml   --env-file .env up -d --build && break; \
     sleep 20; done ) || true

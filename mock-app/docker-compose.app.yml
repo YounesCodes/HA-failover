@@ -1,7 +1,6 @@
 # App service (deploy as its OWN Dokploy Compose service, e.g. named "app").
-# Connects to the db + redis services on the same host via host-gateway:
+# Connects to the db service on the same host via host-gateway:
 #   Postgres -> host.docker.internal:5432   (the "db" service, Patroni leader)
-#   Redis    -> host.docker.internal:6379   (the "redis" service)
 
 name: ha-app
 
@@ -15,7 +14,6 @@ services:
       PGUSER: ${PG_SUPERUSER}
       PGPASSWORD: ${PG_SUPERUSER_PASSWORD}
       PGDATABASE: postgres
-      REDIS_URL: redis://host.docker.internal:6379
       REGION: ${REGION}
       NODE_NAME: ${PATRONI_NAME}
       PORT: "8080"

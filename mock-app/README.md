@@ -1,16 +1,23 @@
-# CRUD to-do mock app
+# haload — cross-region write-workload app
 
-A small **to-do list** app used to make cross-region **replication and failover
-visible**. Deploy the same bundle to every app server; the witness runs etcd alone.
+A **write-heavy** app used to make cross-region **replication and failover**
+both *visible* and *measurable*. It exercises many write patterns and funnels
+every acknowledged write into a single append-only ledger, so failover data loss
+(RPO) can be checked **exactly** and replication sync speed measured. Deploy the
+same bundle to every app server; the witness runs etcd alone.
 
-Each app server runs **three separate Dokploy services** (like prod's app / db /
-redis cards), each its own compose file:
+> **Why not the old to-do app?** The previous version had one write path (insert
+> a todo) and checked only that the *highest* id survived. haload has eight write
+> patterns and verifies that **every** acknowledged write survives — the rigorous
+> RPO test — plus it measures how fast writes reach the standby.
+
+Each app server runs **two separate Dokploy services** (like prod's app / db
+cards), each its own compose file:
 
 | Dokploy service | compose file | What | Network |
 |---|---|---|---|
-| `redis` | `docker-compose.redis.yml` | Redis (cache) | host (`:6379`) |
 | `db` | `docker-compose.db.yml` | **etcd + Patroni-managed Postgres** (HA) | host (mesh, `:5432`) |
-| `app` | `docker-compose.app.yml` | Node CRUD API + live HTML UI | `:8080`; reaches db/redis via host-gateway |
+| `app` | `docker-compose.app.yml` | Node write-workload API + live dashboard | `:8080`; reaches db via host-gateway |
 
 > Ports: **Dokploy** owns 80/443 (Traefik) + 3000 (UI); the app runs on **8080**
 > so they don't clash. Browser + Route 53 health check target `:8080`.
@@ -22,9 +29,7 @@ built-in Postgres resource. They're mutually exclusive: Patroni must own the
 Postgres process/data/config to elect a leader, promote, and fence, whereas the
 built-in resource is a standalone `postgres` container Dokploy controls (no
 replication/failover). So the only way to have a **Dokploy-managed, HA** Postgres
-is this Compose service. Redis has no such constraint — a `redis` Compose service
-(here) or Dokploy's built-in Redis resource both work; if you want the built-in
-resource's backup/metrics UI, create it and point the app's `REDIS_URL` at it.
+is this Compose service.
 
 ### Migrating an existing built-in Postgres → this Patroni service (prod)
 1. Stand up the Patroni `db` Compose service **alongside** the current built-in
@@ -41,28 +46,50 @@ identical, so it's a data-move + repoint, not a rewrite.
 ## How it shows replication working
 
 Open `http://<server-ip>:8080` on any node. The colored banner shows the serving
-**region / node**, whether it's **LEADER (writable)** or **REPLICA (read-only)**,
-the **replication lag**, and the live list.
+**region / node**, **LEADER (writable)** vs **REPLICA (read-only)**, and the live
+**replication lag**; below it are per-table counts and a live feed of recent
+writes. Buttons fire each write pattern; **▶ hammer mixed** fires a rapid mixed
+workload.
 
-- On a **Region A** server (leader): add / toggle / delete todos.
-- On its **Region B** twin (replica): the same rows appear within the lag window
-  — **that's replication** — and the form is disabled (read-only standby).
-- On **failover**, the Region B server flips to LEADER (writable) and the banner
-  turns green; Route 53 sends traffic there.
+- On a **Region A** server (leader): fire writes — the counts and feed climb.
+- On its **Region B** twin (replica): the same counts appear within the lag
+  window — **that's replication** — and the write buttons are disabled (read-only).
+- On **failover**, the Region B server flips to LEADER (writable), the banner
+  turns green, and the load balancer sends traffic there.
 
-DB pairs share a Patroni scope: `app-a1+app-b1 = app1`, `a2+b2 = app2`, `a3+b3 = app3`.
+The DB pair shares a Patroni scope: `app-a1+app-b1 = app1`. (Adding more app pairs via `app_count` would add `a2+b2 = app2`, etc.)
+
+## Write patterns & the durability ledger
+
+Every successful write — whatever its pattern — inserts one row into the
+append-only **`writes`** ledger *in the same transaction* and returns a
+server-assigned monotonic **`seq`** plus the post-commit WAL **`lsn`**. `seq` is
+the durability token used for exact RPO checks; `lsn` lets a client time when the
+write became durable on the standby.
+
+| Pattern | Endpoint | Stresses |
+|---|---|---|
+| insert  | `POST /api/insert` | plain append |
+| upsert  | `POST /api/kv` | `INSERT … ON CONFLICT` |
+| counter | `POST /api/counter/:name` | hot-row `UPDATE` |
+| ledger  | `POST /api/ledger` | txn read-modify-write (`SELECT … FOR UPDATE`) |
+| doc     | `POST /api/doc` | large JSONB insert |
+| batch   | `POST /api/batch` `{n}` | many rows in one txn |
+| patch   | `PATCH /api/row/:id` | `UPDATE` |
+| delete  | `DELETE /api/row/:id` | `DELETE` |
 
 ## Endpoints
 
 | Method | Path | Behaviour |
 |--------|------|-----------|
-| `GET` | `/` | the HTML UI |
-| `GET` | `/health` | `200` only on the writable leader, else `503` (Route 53 probes this) |
-| `GET` | `/api/status` | node, region, role, replication lag, todo count |
-| `GET` | `/api/todos` | list (works on a replica — proves replication) |
-| `POST` | `/api/todos` `{title}` | create (leader only; `503` on a standby) |
-| `PATCH` | `/api/todos/:id` `{title?,done?}` | update (leader only) |
-| `DELETE` | `/api/todos/:id` | delete (leader only) |
+| `GET` | `/` | the dashboard UI |
+| `GET` | `/health` | `200` only on the writable leader, else `503` (the LB probes this) |
+| `GET` | `/api/status` | node, region, role, per-table counts, max seq, replication lag (native) |
+| `GET` | `/api/lsn` | this node's WAL position (leader: current; replica: replayed) — for sync-lag timing |
+| `POST` | `/api/write` `{kind?,client_id,client_seq}` | one write (leader only); `kind` omitted/`"mixed"` picks a random pattern |
+| `POST` | `/api/verify` `{seqs:[…]}` | **exact RPO**: returns `{present, missing_count, missing[]}` for the given acked seqs |
+| `GET` | `/api/feed` | recent writes (for the dashboard) |
+| — | *per-pattern write endpoints* | see the table above (all leader-only) |
 
 ## Deploy
 
@@ -86,26 +113,37 @@ docker compose -f docker-compose.witness.yml --env-file .env up -d   # witness
 ## Verify
 
 ```bash
-etcdctl member list                       # 7 members, 1 leader
+etcdctl member list                       # 3 members, 1 leader
 patronictl -c /tmp/patroni.yml list        # per scope: A = Leader, B = Sync Standby, lag ~0
 curl -s http://localhost:8080/api/status   # role: leader (A) / replica (B)
 ```
 
 ## Failover test (measured)
 
+Drive the workload through the load-balancer hostname (or an app EIP), passing the
+two node URLs so it can also measure end-to-end sync lag:
+
 ```bash
-node probe.mjs http://<app1-ip>:8080 1000 run1.csv
-# then kill Region A (stop app-a* or power them off)
-#  -> Region B etcd members + witness keep quorum; Patroni promotes app-b{n}
-#  -> their /health flips to 200; Route 53 returns the Region B record
-# Ctrl-C -> summary with RTO per outage + RPO verdict (no acked todo lost).
+node probe.mjs http://app1.<domain>:8080 \
+  --conc 8 --nodes http://<app-a1-ip>:8080,http://<app-b1-ip>:8080 --csv run1.csv
+# then kill the leader's region:
+#   graceful : docker stop <postgres container>       (Patroni releases the lock → fast promote)
+#   hard     : aws ec2 stop-instances --force <id>     (TTL-bound promote — worst case)
+#  -> the standby is promoted; /health flips to 200 there; the LB routes to it.
+# Ctrl-C -> summary: throughput, per-kind counts, RTO per outage,
+#           EXACT RPO (acked writes lost), and sync-lag percentiles.
 ```
-The probe creates a todo each tick and, on recovery, checks the highest acked id
-still exists → RTO + RPO as numbers. The CSV's `node` column shows the exact tick
-traffic moved from `app-a*` to `app-b*`.
+
+What it measures:
+- **RTO** — downtime per outage (gap between the last good write and the first good write after promotion).
+- **RPO (exact)** — on each recovery it calls `POST /api/verify` with the **full set** of acked `seq`s and reports how many acknowledged writes did *not* survive on the new leader. Expect **0** (synchronous replication).
+- **Sync speed** — *native* (`pg_stat_replication` replay_lag sampled from the leader) and, with `--nodes`, *end-to-end* (write on the leader, then poll the standby's replayed LSN until it passes the write's LSN, timed from the probe's own clock — no clock skew). Reported as p50/p95/max.
+
+Flags: `--conc N` (concurrent writers, default 8), `--rate R` (target writes/s, default unthrottled), `--kind K` (a single pattern instead of mixed), `--duration S`, `--csv FILE`. Concurrency matters: many in-flight writes at the instant of failure is what actually stresses the zero-loss guarantee.
 
 ## Notes
-- Redis is **per-server, not replicated** — only the Postgres `todos` table is the
-  durable, replicated source of truth.
-- Networking uses host mode for `etcd`/`postgres` (mesh) + bridge for `app`/`redis`.
+- Postgres (the `writes` ledger + the pattern tables) is the only durable,
+  replicated state — this test is purely about active-passive DB sync between the
+  primary and standby.
+- Networking uses host mode for `etcd`/`postgres` (mesh) + bridge for the `app`.
 - Mock only: the app connects as the Postgres superuser to `postgres`. Not for prod.

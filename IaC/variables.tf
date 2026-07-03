@@ -35,13 +35,13 @@ variable "region_witness" {
 # Sizing
 # ---------------------------------------------------------------------------
 variable "app_count" {
-  description = "Full-stack app servers per region (one self-contained app each)."
+  description = "Full-stack app servers per region (one self-contained app each). Default 1 = the minimal single-app topology (app-a1 + app-b1 + witness = 3 instances, etcd majority 2)."
   type        = number
-  default     = 3
+  default     = 1
 }
 
 variable "app_instance_type" {
-  description = "Full-stack server type. Runs the app + Postgres + Redis + etcd + Patroni AND a local Dokploy stack, so size for RAM. t3.medium (2/4) is the floor with swap; t3.large (2/8) is comfortable."
+  description = "Full-stack server type. Runs the app + Postgres + etcd + Patroni AND a local Dokploy stack, so size for RAM. t3.medium (2/4) is the floor with swap; t3.large (2/8) is comfortable."
   type        = string
   default     = "t3.medium"
 }
@@ -59,7 +59,7 @@ variable "root_volume_gb" {
 }
 
 variable "data_volume_gb" {
-  description = "Dedicated data EBS size (GB) per app server — holds PGDATA + Redis persistence."
+  description = "Dedicated data EBS size (GB) per app server — holds PGDATA."
   type        = number
   default     = 50
 }

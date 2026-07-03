@@ -12,15 +12,17 @@ Design docs: `../../HA_Failover_Architecture.docx`, `../../HA_Failover_Build_Pla
 
 | Region | Resources |
 |--------|-----------|
-| A (primary) | 3 self-contained app servers (`app-a1..3`) |
-| B (standby) | 3 self-contained app servers (`app-b1..3`) |
+| A (primary) | 1 self-contained app server (`app-a1`) |
+| B (standby) | 1 self-contained app server (`app-b1`) |
 | Witness     | 1 etcd vote-only node (`witness`) |
 
-= **7 instances**. Each app server is self-contained (CRUD to-do app + its own
-Postgres + Redis + Patroni + etcd), with a dedicated **data EBS volume**
-(`/data`) and an **Elastic IP**. etcd = 6 app members + witness = **7, majority 4**
-(losing a whole region leaves 4 → promotion proceeds). DB pairs
-`app-a{n}↔app-b{n}` share Patroni scope `app{n}`.
+= **3 instances** (the minimal single-app topology; `app_count = 1`). Each app
+server is self-contained (the write-workload app + its own Postgres + Patroni +
+etcd), with a dedicated **data EBS volume** (`/data`) and an **Elastic IP**.
+etcd = 2 app members + witness = **3, majority 2** (losing a whole region leaves
+2 → promotion proceeds; the witness is what keeps quorum when one region is
+gone). The pair `app-a1↔app-b1` shares Patroni scope `app1`. Set `app_count`
+higher to add more independent app pairs (`app-a2↔app-b2 = app2`, …).
 
 Plus, per region: a minimal VPC (public subnet + IGW), the app security group,
 and a key pair from your `public_key`. Postgres passwords are generated
@@ -39,12 +41,12 @@ The bring-up depends on `deploy_via_dokploy`:
 
 ### Toggles
 - `enable_witness = false` → **Option B** (streaming replication + scripted
-  promotion, no auto quorum): drops the witness, leaving the 6 app servers.
+  promotion, no auto quorum): drops the witness, leaving the 2 app servers.
 - `deploy_via_dokploy = true` → deploy through Dokploy instead of raw compose.
 
 ## Ports / security model
 
-DB / Redis / etcd / Patroni traffic rides the **Tailscale interface**, which the
+DB / etcd / Patroni traffic rides the **Tailscale interface**, which the
 SGs don't govern — those ports are never public. Security groups allow:
 
 - **App servers**: `22` + `3000` (Dokploy UI) from `allowed_ssh_cidr`;
@@ -78,7 +80,7 @@ Tear down: `terraform destroy` (or **stop** instances between sessions — EBS p
 
 ## Cost note (mock profile)
 
-24/7 in EU regions, roughly: 6×`t3.medium` + 1×`t3.micro` + EBS + EIPs.
+24/7 in EU regions, roughly: 2×`t3.medium` + 1×`t3.micro` + EBS + EIPs.
 `t3.medium` (not `t3.small`) because each box runs the app **and** a local
 Dokploy stack; drop to `t3.small` if you set `mock_app_repo`/Dokploy aside.
 App servers are stateful (live DB) → **not** Spot; witness stays On-Demand too.

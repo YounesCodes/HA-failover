@@ -10,9 +10,14 @@ etcd3:
 
 bootstrap:
   dcs:
-    ttl: 30
-    loop_wait: 10
-    retry_timeout: 10
+    # Failover tuning (middle ground for a cross-region link ~20-25 ms RTT).
+    # Detection window ~= ttl (~20 s here, down from Patroni's 30 s default).
+    # Hard rule Patroni enforces: ttl >= loop_wait + 2*retry_timeout (20 >= 15, ok).
+    # retry_timeout 5 s still clears the RTT ~200x, so normal jitter won't trip it;
+    # if you ever see spurious failovers on a flaky link, raise to ttl:25/retry:8.
+    ttl: 20
+    loop_wait: 5
+    retry_timeout: 5
     maximum_lag_on_failover: 1048576
     # RPO ~ 0 in normal operation; non-strict so the primary degrades to async
     # (instead of blocking writes) if its standby is lost.

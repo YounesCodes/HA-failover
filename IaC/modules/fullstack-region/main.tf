@@ -61,7 +61,7 @@ resource "aws_key_pair" "this" {
 
 # --------------------------------------------------------------------------
 # Security groups
-#   DB / Redis / etcd / Patroni traffic rides the Tailscale interface
+#   DB / etcd / Patroni traffic rides the Tailscale interface
 #   (tailscale0), which is NOT governed by these SGs — so we only open the
 #   public-facing ports here.
 # --------------------------------------------------------------------------
@@ -166,7 +166,7 @@ resource "aws_instance" "app" {
   }
 }
 
-# Dedicated data volume per app server: PGDATA + Redis persistence.
+# Dedicated data volume per app server: PGDATA.
 resource "aws_ebs_volume" "data" {
   count             = var.app_count
   availability_zone = aws_subnet.public.availability_zone

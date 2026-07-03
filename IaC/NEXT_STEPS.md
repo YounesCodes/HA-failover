@@ -3,7 +3,7 @@
 With `tailscale_auth_key` **and** `mock_app_repo` set, user-data does almost
 everything on first boot: mounts `/data`, adds swap, installs **Docker +
 Dokploy + Tailscale**, joins the mesh (MagicDNS), and brings up the stack. Nodes
-address each other by MagicDNS name (`app-a1`, `app-b2`, `witness`), so the etcd
+address each other by MagicDNS name (`app-a1`, `app-b1`, `witness`), so the etcd
 + Patroni clusters self-assemble. How the stack is brought up depends on
 `deploy_via_dokploy` (see §E).
 
@@ -15,9 +15,9 @@ terraform output            # region_a / region_b app EIPs, witness IP
 terraform output ssh_hints
 ```
 
-Layout: `app-a1..3` + `app-b1..3` (each = to-do app + Postgres + Redis + etcd +
-Patroni), `witness` (etcd vote). etcd = 7 members, majority 4. DB pairs
-`app-a{n}↔app-b{n}` share Patroni scope `app{n}`.
+Layout: `app-a1` + `app-b1` (each = the write-workload app + Postgres + etcd +
+Patroni), `witness` (etcd vote). etcd = 3 members, majority 2. The pair
+`app-a1↔app-b1` shares Patroni scope `app1`. (`app_count` > 1 adds more pairs.)
 
 ---
 
@@ -37,9 +37,9 @@ hosted zone / domain. Per app, create a record with **failover routing**:
 ## B. Verify the auto-deploy (should already be running)
 
 ```bash
-ssh ubuntu@<app-a1-ip> 'tailscale status'                 # all 7 nodes present
+ssh ubuntu@<app-a1-ip> 'tailscale status'                 # all 3 nodes present
 ssh ubuntu@<app-a1-ip> 'sudo tail -n 40 /var/log/ha-bootstrap.log'   # bootstrap trace
-ssh ubuntu@<app-a1-ip> 'docker ps'                        # etcd, postgres, redis, app up
+ssh ubuntu@<app-a1-ip> 'docker ps'                        # etcd, postgres, app up
 curl -s http://<app-a1-ip>:8080/api/status                # role: leader
 curl -s http://<app-b1-ip>:8080/api/status                # role: replica, lag ~0
 ```
@@ -50,9 +50,9 @@ watch it appear (read-only) — that's replication.
 
 ```bash
 node ../mock-app/probe.mjs http://<app-a1-ip>:8080 1000 run1.csv
-# kill Region A (stop app-a* or power them off)
-#   -> Region B etcd + witness keep quorum; Patroni promotes app-b{n}
-#   -> their /health flips to 200; Route 53 returns the SECONDARY record
+# kill Region A (stop app-a1 or power it off)
+#   -> Region B etcd + witness keep quorum; Patroni promotes app-b1
+#   -> its /health flips to 200; Route 53 returns the SECONDARY record
 # Ctrl-C -> RTO per outage + RPO verdict (no acked todo lost).
 ```
 
@@ -80,7 +80,7 @@ idempotent (find-or-create), so it's safe to re-run. The stack then appears as a
 > clones it anonymously) that actually **contains `testing/mock-app/`** on the
 > `main` branch. An empty/private repo → `compose status = error`, nothing runs.
 
-Each server runs its **own local Dokploy**; the script runs on all six.
+Each server runs its **own local Dokploy**; the script runs on both app servers.
 
 Admin login (same on every server): `terraform output -json dokploy_admin`.
 Browse `http://<ip>:3000`.

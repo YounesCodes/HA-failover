@@ -32,7 +32,7 @@ variable "enable_route53" {
 }
 
 variable "dns_zone_name" {
-  description = "Subdomain delegated to Route 53, e.g. aws.youneslab.xyz. Records become app1.<this>, app2.<this>, ..."
+  description = "Subdomain delegated to Route 53, e.g. aws.youneslab.xyz. One record per app: with the single-app topology that is just app1.<this>."
   type        = string
   default     = ""
 }

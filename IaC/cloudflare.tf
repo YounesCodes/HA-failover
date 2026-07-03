@@ -59,7 +59,7 @@ variable "cloudflare_lb_proxied" {
   default     = false
 }
 variable "cloudflare_lb_app_count" {
-  description = "How many app pairs to expose. 1 = 2 origins = free endpoints; 3 = 6 origins (~$20/mo)."
+  description = "How many app pairs to expose (must be <= app_count). With the single-app topology this is 1 = 2 origins = free endpoints."
   type        = number
   default     = 1
 }
