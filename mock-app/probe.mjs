@@ -61,6 +61,7 @@ const nativeLag = [];           // replica replay_lag seconds sampled from the l
 const e2e = [];                 // end-to-end ms: write on leader -> visible on standby
 let winOk = 0, winFail = 0;     // per-tick window counters
 let running = true;
+let closing = false;            // guard so only one worker records a given recovery
 
 const lsnToBig = (s) => { if (!s || !s.includes('/')) return 0n; const [a, b] = s.split('/'); return (BigInt('0x' + a) << 32n) | BigInt('0x' + b); };
 const pct = (arr, p) => { if (!arr.length) return null; const a = [...arr].sort((x, y) => x - y); return a[Math.min(a.length - 1, Math.floor((p / 100) * a.length))]; };
@@ -83,20 +84,35 @@ async function req(method, url, body) {
 
 // ---- exact RPO check: verify all acked seqs survived on the current leader --
 async function verify(seqs) {
-  let present = 0, missing = 0; const sample = [];
+  let present = 0, missing = 0, unverified = 0; const sample = [];
   for (let i = 0; i < seqs.length; i += 5000) {
     const chunk = seqs.slice(i, i + 5000);
-    const r = await req('POST', BASE + '/api/verify', { seqs: chunk });
-    if (!r.ok || !r.body) { missing += chunk.length; continue; }   // count unknown as missing
+    // Retry until the writable leader actually answers. During a failover the LB
+    // may briefly route this POST to the dead/transitional origin; a failed request
+    // is NOT the same as a missing write, so don't count it as data loss.
+    let r = null;
+    for (let t = 0; t < 20; t++) {
+      r = await req('POST', BASE + '/api/verify', { seqs: chunk });
+      if (r.ok && r.body && typeof r.body.missing_count === 'number') break;
+      r = null; await sleep(1000);
+    }
+    if (!r) { unverified += chunk.length; continue; }   // couldn't reach the leader even after retries
     present += r.body.present; missing += r.body.missing_count;
     if (sample.length < 20 && Array.isArray(r.body.missing)) sample.push(...r.body.missing.slice(0, 20 - sample.length));
   }
-  return { present, missing, sample };
+  return { present, missing, unverified, sample };
 }
 
 async function whoLeads() {
-  const st = await req('GET', BASE + '/api/status');
-  return st.body && st.body.node ? st.body.node : '?';
+  // Poll the LB until it returns a genuinely writable leader (during a failover
+  // CF may briefly still route to the dead old leader, which answers 503 with its
+  // own node name — don't report that as the promoted node).
+  for (let i = 0; i < 12; i++) {
+    const st = await req('GET', BASE + '/api/status');
+    if (st.body && st.body.writable && st.body.node) return st.body.node;
+    await sleep(500);
+  }
+  return '?';
 }
 
 // ---- one writer loop -------------------------------------------------------
@@ -111,8 +127,13 @@ async function worker() {
       acked.push(r.body.seq);
       byKind[r.body.kind] = (byKind[r.body.kind] || 0) + 1;
       const gap = now - lastOkWall;
-      if (gap > OUTAGE_MS) await closeOutage(now, gap);   // an outage just ended
-      lastOkWall = now;
+      const downWall = lastOkWall;
+      lastOkWall = now;                                   // update BEFORE the await so concurrent
+      if (gap > OUTAGE_MS && !closing) {                  // workers don't re-record the same recovery
+        closing = true;
+        await closeOutage(downWall, now, gap);            // an outage just ended
+        closing = false;
+      }
     } else {
       failures++; winFail++;
     }
@@ -120,15 +141,16 @@ async function worker() {
   }
 }
 
-async function closeOutage(nowWall, gapMs) {
+async function closeOutage(downWall, upWall, gapMs) {
   const ackedBefore = acked.length;
   process.stdout.write(`\n  ── recovery after ${(gapMs / 1000).toFixed(1)}s down — verifying ${ackedBefore} acked writes…\n`);
   const v = await verify(acked.slice());
   const promotedTo = await whoLeads();
-  const rec = { downIso: new Date(lastOkWall).toISOString(), upIso: new Date(nowWall).toISOString(),
-    rtoMs: gapMs, ackedBefore, lost: v.missing, lostSample: v.sample, promotedTo };
+  const rec = { downIso: new Date(downWall).toISOString(), upIso: new Date(upWall).toISOString(),
+    rtoMs: gapMs, ackedBefore, lost: v.missing, unverified: v.unverified, lostSample: v.sample, promotedTo };
   outages.push(rec);
-  console.log(`  ── RTO ${(gapMs / 1000).toFixed(1)}s · RPO ${v.missing === 0 ? 'OK (0 lost of ' + ackedBefore + ')' : 'LOSS ' + v.missing + ' of ' + ackedBefore} · now served by ${promotedTo}\n`);
+  const uv = v.unverified ? ` (${v.unverified} unverified — leader unreachable)` : '';
+  console.log(`  ── RTO ${(gapMs / 1000).toFixed(1)}s · RPO ${v.missing === 0 ? 'OK (0 lost of ' + ackedBefore + ')' : 'LOSS ' + v.missing + ' of ' + ackedBefore}${uv} · now served by ${promotedTo}\n`);
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -200,15 +222,16 @@ async function summary() {
   // Final full RPO check.
   if (acked.length) {
     const v = await verify(acked.slice());
-    console.log(`\nFINAL RPO: ${v.missing === 0 ? 'OK — all ' + acked.length + ' acknowledged writes present (0 lost)' :
-      'LOSS — ' + v.missing + ' of ' + acked.length + ' acknowledged writes MISSING  e.g. ' + v.sample.join(',')}`);
+    const uv = v.unverified ? `  (${v.unverified} could not be verified — leader unreachable)` : '';
+    console.log(`\nFINAL RPO: ${v.missing === 0 ? 'OK — all ' + (acked.length - v.unverified) + ' verified acknowledged writes present (0 lost)' :
+      'LOSS — ' + v.missing + ' of ' + acked.length + ' acknowledged writes MISSING  e.g. ' + v.sample.join(',')}${uv}`);
   }
   if (!outages.length) console.log('\nno outage observed.');
   else {
     console.log('');
     outages.forEach((o, i) => console.log(
       `outage #${i + 1}: ${o.downIso} → ${o.upIso}  RTO=${(o.rtoMs / 1000).toFixed(1)}s  ` +
-      `RPO=${o.lost === 0 ? '0 (no acked write lost)' : 'LOSS ' + o.lost + ' e.g. ' + o.lostSample.join(',')}  promoted→${o.promotedTo}`));
+      `RPO=${o.lost === 0 ? '0 (no acked write lost)' : 'LOSS ' + o.lost + ' e.g. ' + o.lostSample.join(',')}${o.unverified ? ' (' + o.unverified + ' unverified)' : ''}  promoted→${o.promotedTo}`));
     console.log(`worst RTO: ${(Math.max(...outages.map((o) => o.rtoMs)) / 1000).toFixed(1)}s`);
   }
 

@@ -7,8 +7,9 @@ address each other by MagicDNS name (`app-a1`, `app-b1`, `witness`), so the etcd
 + Patroni clusters self-assemble. How the stack is brought up depends on
 `deploy_via_dokploy` (see §E).
 
-**So after apply the only required step is Route 53** (§A). Everything below §A
-is verification + optional.
+**With `enable_cloudflare_lb = true` the load balancer is created by the same
+apply, so in DNS-only mode there is nothing left to do by hand** (§A covers the
+options). Everything below §A is verification + optional.
 
 ```bash
 terraform output            # region_a / region_b app EIPs, witness IP
@@ -21,16 +22,26 @@ Patroni), `witness` (etcd vote). etcd = 3 members, majority 2. The pair
 
 ---
 
-## A. Configure Route 53 failover  ← the one required manual step
+## A. Global load balancing (traffic routing)
 
-Route 53 can't be fully declared here because you configure it against your own
-hosted zone / domain. Per app, create a record with **failover routing**:
+A global load balancer fronts the app, health-checks `:8080/health` (green only
+on the writable leader), and always serves whichever region holds the primary.
+Two options, toggled in `terraform.tfvars`:
 
-- `app{n}.example.com` PRIMARY → `app-a{n}` EIP, SECONDARY → `app-b{n}` EIP.
-- A **Route 53 health check** per target: **HTTP `GET :8080/health`**, 30 s
-  interval, fail after 3. `/health` is green only on the writable leader, so the
-  SECONDARY is served exactly when Patroni has promoted Region B.
-- **Low record TTL (30–60 s)** — DNS caching is the failover tail (RTO).
+**Cloudflare Load Balancing (default, `enable_cloudflare_lb = true`).** Terraform
+creates the origin pools, the health monitor, and the load balancer for you —
+nothing to configure by hand in DNS-only mode. Reach the app at
+`http://app1.<cloudflare_lb_domain>:8080`. For HTTPS at the edge
+(`cloudflare_lb_proxied = true`), add one Cloudflare dashboard rule: an Origin
+Rule rewriting the origin port to 8080, plus an SSL/TLS mode. Needs the Cloudflare
+API token / account / zone set in tfvars.
+
+**Route 53 DNS failover (alternative, `enable_route53 = true`).** Terraform creates
+a hosted zone, failover records, and health checks for a delegated subdomain
+(PRIMARY → app-a1 EIP, SECONDARY → app-b1 EIP, health-checked on `:8080/health`,
+low TTL). The one manual step is pasting the 4 returned nameservers
+(`terraform output route53_nameservers`) into your parent DNS to delegate the
+subdomain.
 
 (App EIPs come from `terraform output region_a`/`region_b`.)
 
@@ -43,23 +54,30 @@ ssh ubuntu@<app-a1-ip> 'docker ps'                        # etcd, postgres, app 
 curl -s http://<app-a1-ip>:8080/api/status                # role: leader
 curl -s http://<app-b1-ip>:8080/api/status                # role: replica, lag ~0
 ```
-Open `http://<app-a1-ip>:8080` and add a todo; open `http://<app-b1-ip>:8080` and
-watch it appear (read-only) — that's replication.
+Open `http://<app-a1-ip>:8080` and fire some writes (the buttons on the page);
+open `http://<app-b1-ip>:8080` and watch the counts appear (read-only) — that's
+replication.
 
 ## C. Rehearse failover (the actual test)
 
+Drive the workload through the load-balancer hostname; pass both node URLs so the
+probe can also measure end-to-end replication lag:
+
 ```bash
-node ../mock-app/probe.mjs http://<app-a1-ip>:8080 1000 run1.csv
-# kill Region A (stop app-a1 or power it off)
+node ../mock-app/probe.mjs http://app1.<domain>:8080 \
+  --conc 8 --nodes http://<app-a1-ip>:8080,http://<app-b1-ip>:8080 --csv run1.csv
+# kill the leader's region:
+#   graceful : ssh in and `docker stop` its Postgres container   (promotes in ~3 s)
+#   hard     : aws ec2 stop-instances --force <id>                (promotes in ~20 s, TTL)
 #   -> Region B etcd + witness keep quorum; Patroni promotes app-b1
-#   -> its /health flips to 200; Route 53 returns the SECONDARY record
-# Ctrl-C -> RTO per outage + RPO verdict (no acked todo lost).
+#   -> its /health flips to 200; the load balancer routes traffic to Region B
+# Ctrl-C -> throughput, RTO per outage, EXACT RPO (no acked write lost), sync-lag p50/p95/max.
 ```
 
 ## D. Failback
 Bring Region A back (it rejoins as standby via `reinit`/`pg_rewind`), then during
-a window `patronictl switchover`; Route 53 sees A healthy again and serves PRIMARY.
-Manual, never automatic.
+a window `patronictl switchover`; the load balancer sees A healthy again and
+routes back to Region A. Manual, never automatic.
 
 ## E. How the stack is brought up — `deploy_via_dokploy`
 
@@ -80,7 +98,7 @@ idempotent (find-or-create), so it's safe to re-run. The stack then appears as a
 > clones it anonymously) that actually **contains `testing/mock-app/`** on the
 > `main` branch. An empty/private repo → `compose status = error`, nothing runs.
 
-Each server runs its **own local Dokploy**; the script runs on both app servers.
+Each server runs its **own local Dokploy**; the script runs on both app servers. I  
 
 Admin login (same on every server): `terraform output -json dokploy_admin`.
 Browse `http://<ip>:3000`.
@@ -107,7 +125,9 @@ to patch if they differ.
 
 ## Things that are NOT IaC (do them yourself)
 
-1. **Route 53 failover** — §A above (your zone/domain).
+1. **Load-balancer manual bits** — §A above. Cloudflare DNS-only: none. Cloudflare
+   proxied: the Origin Rule (port 8080) + SSL mode. Route 53: the nameserver
+   delegation into your parent DNS.
 2. **Cluster convergence** — on first boot, if a node came up before its peers'
    MagicDNS was ready, the retry loop usually still converges. If a box isn't
    healthy after ~5 min, re-run the deploy: raw path → `cd
@@ -120,8 +140,9 @@ to patch if they differ.
    `terraform output -json dokploy_admin`). With the default (`false`), set the
    admin yourself at `http://<ip>:3000` if you want to use the UI — not needed
    for the failover test.
-5. **TLS** (optional for a test) — the app is HTTP on 8080. For HTTPS, terminate
-   in-region at Traefik with the **DNS-01 (Route 53) ACME** challenge so the warm
+5. **TLS** (optional for a test) — the app is HTTP on 8080. For HTTPS: easiest is
+   **Cloudflare edge TLS** (`cloudflare_lb_proxied = true` + the Origin Rule, §A);
+   or terminate in-region at Traefik with a DNS-01 ACME challenge so the warm
    standby renews without traffic (see Architecture Report §4.7).
 6. **Tailscale key — MUST be EPHEMERAL** (+ reusable, pre-approved, tagged,
    MagicDNS on). Nodes address each other by MagicDNS name (`app-a1`, `witness`).

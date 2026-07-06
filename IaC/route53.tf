@@ -2,21 +2,21 @@
 # Route 53 DNS failover for the HA test.
 #
 # WHY THIS IS SELF-CONTAINED & OPTIONAL:
-#   Your domain youneslab.xyz is registered at Namecheap with nameservers
+#   Your domain example.com is registered at Namecheap with nameservers
 #   pointed at Cloudflare — Cloudflare is authoritative. We do NOT move it.
 #   Instead we create a Route 53 *public hosted zone* for a delegated
-#   subdomain (default: aws.youneslab.xyz) and put the failover records there.
+#   subdomain (default: aws.example.com) and put the failover records there.
 #   Everything is gated behind `enable_route53` so a normal apply is unaffected
 #   until you opt in.
 #
 # THE ONE MANUAL STEP (in Cloudflare, once):
 #   After `terraform apply`, run `terraform output route53_nameservers` and add
-#   4 `NS` records in the youneslab.xyz Cloudflare zone, all named `aws`, one per
-#   nameserver. That delegates *.aws.youneslab.xyz to Route 53. Nothing changes
+#   4 `NS` records in the example.com Cloudflare zone, all named `aws`, one per
+#   nameserver. That delegates *.aws.example.com to Route 53. Nothing changes
 #   at Namecheap.
 #
 # HOW FAILOVER WORKS:
-#   Per app, one name (app1.aws.youneslab.xyz) has a PRIMARY record -> Region A
+#   Per app, one name (app1.aws.example.com) has a PRIMARY record -> Region A
 #   EIP and a SECONDARY record -> Region B EIP. Each is tied to a Route 53 health
 #   check that probes HTTP :8080/health. /health returns 200 ONLY on the writable
 #   Patroni leader (503 on a read-only standby), so the record served always
@@ -32,7 +32,7 @@ variable "enable_route53" {
 }
 
 variable "dns_zone_name" {
-  description = "Subdomain delegated to Route 53, e.g. aws.youneslab.xyz. One record per app: with the single-app topology that is just app1.<this>."
+  description = "Subdomain delegated to Route 53, e.g. aws.example.com. One record per app: with the single-app topology that is just app1.<this>."
   type        = string
   default     = ""
 }
@@ -133,7 +133,7 @@ resource "aws_route53_record" "secondary" {
 
 # ----- Outputs --------------------------------------------------------------
 output "route53_nameservers" {
-  description = "Paste these into Cloudflare as 4 NS records named 'aws' on youneslab.xyz to delegate the subdomain."
+  description = "Paste these into Cloudflare as 4 NS records named 'aws' on example.com to delegate the subdomain."
   value       = var.enable_route53 ? aws_route53_zone.ha[0].name_servers : null
 }
 

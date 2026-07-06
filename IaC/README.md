@@ -2,11 +2,15 @@
 
 Provisions and **auto-deploys** the cross-region active-passive failover test on
 AWS. With `tailscale_auth_key` + `mock_app_repo` set, one `terraform apply`
-brings up the servers, installs Docker + Dokploy + Tailscale, and self-deploys
-the full stack — leaving **only Route 53** to configure by hand.
+brings up the servers, installs Docker + Dokploy + Tailscale, self-deploys the
+full stack, and (with `enable_cloudflare_lb = true`) creates the **Cloudflare
+load balancer** too — so there is nothing left to wire by hand in DNS-only mode.
 
-Design docs: `../../HA_Failover_Architecture.docx`, `../../HA_Failover_Build_Plan.docx`
-(those describe the Cloudflare reference design; this test uses Route 53).
+Global load balancing has two options (see `NEXT_STEPS.md` §A):
+**Cloudflare Load Balancing** (default here, `enable_cloudflare_lb = true`) or
+**Route 53 DNS failover** (`enable_route53 = true`) as an alternative.
+
+Design docs: `../../HA_Failover_Architecture.docx`, `../../HA_Failover_Build_Plan.docx`.
 
 ## What it creates (Option A, default — `enable_witness = true`)
 
@@ -54,7 +58,7 @@ SGs don't govern — those ports are never public. Security groups allow:
 - **Witness**: `22` only.
 
 The mock app is on **8080** so it doesn't clash with Dokploy's 80/443/3000.
-Route 53 health-checks `:8080/health`.
+The load balancer (Cloudflare or Route 53) health-checks `:8080/health`.
 
 ## Prerequisites
 
@@ -74,7 +78,9 @@ terraform init
 terraform apply
 terraform output
 ```
-Then configure **Route 53** (see `NEXT_STEPS.md` §A) — that's the only manual step.
+With `enable_cloudflare_lb = true` (+ the Cloudflare token/zone in tfvars) the load
+balancer is created by this apply — no manual step in DNS-only mode. See
+`NEXT_STEPS.md` §A for the Cloudflare/Route 53 options.
 
 Tear down: `terraform destroy` (or **stop** instances between sessions — EBS persists).
 
@@ -87,5 +93,5 @@ App servers are stateful (live DB) → **not** Spot; witness stays On-Demand too
 
 ## After apply
 
-See **`NEXT_STEPS.md`** — §A (Route 53, the one required step) plus verification,
-the failover rehearsal, and the list of things that aren't IaC.
+See **`NEXT_STEPS.md`** — §A (global load balancing: Cloudflare / Route 53) plus
+verification, the failover rehearsal, and the list of things that aren't IaC.

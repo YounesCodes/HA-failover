@@ -20,7 +20,7 @@ cards), each its own compose file:
 | `app` | `docker-compose.app.yml` | Node write-workload API + live dashboard | `:8080`; reaches db via host-gateway |
 
 > Ports: **Dokploy** owns 80/443 (Traefik) + 3000 (UI); the app runs on **8080**
-> so they don't clash. Browser + Route 53 health check target `:8080`.
+> so they don't clash. The browser + the load balancer's health check target `:8080`.
 > The witness runs `docker-compose.witness.yml` (etcd only).
 
 ### Patroni vs the built-in Dokploy Postgres resource

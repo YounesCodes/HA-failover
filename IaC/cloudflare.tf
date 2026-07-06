@@ -12,7 +12,7 @@
 #   ACCOUNT ALIGNMENT (important): pools + monitors are ACCOUNT-scoped, the load
 #   balancer is ZONE-scoped, and they MUST live in the SAME Cloudflare account.
 #   So the domain (var.cloudflare_lb_domain) must be an active zone in the account
-#   identified by var.cloudflare_account_id. Here: othpwn.com in the company acct.
+#   identified by var.cloudflare_account_id. Here: example.com in the company acct.
 #
 #   Everything is gated behind enable_cloudflare_lb (default off), independent of
 #   route53.tf — you can run both in parallel during testing.
@@ -44,12 +44,12 @@ variable "cloudflare_account_id" {
   default     = ""
 }
 variable "cloudflare_zone_id" {
-  description = "Zone ID of the domain used for the LB (e.g. othpwn.com)."
+  description = "Zone ID of the domain used for the LB (e.g. example.com)."
   type        = string
   default     = ""
 }
 variable "cloudflare_lb_domain" {
-  description = "Domain for the LB hostnames, e.g. othpwn.com -> app1.othpwn.com."
+  description = "Domain for the LB hostnames, e.g. example.com -> app1.example.com."
   type        = string
   default     = ""
 }
